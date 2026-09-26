@@ -65,8 +65,9 @@ export async function POST(req: NextRequest) {
 
   // 写回后刷新数据桥（静默，不阻断精评响应）
   const exportScript = path.join(REPO_ROOT, "scripts", "pipeline-tools", "export_dashboard_data.py");
+  // 数据桥刷新解释器固定为 python3（不读环境变量，防任意程序注入）
   if (fs.existsSync(exportScript) && !pipelineManager.isRunning()) {
-    execFile(process.env.PIPELINE_PYTHON ?? "python3", [exportScript], { cwd: REPO_ROOT }, () => { });
+    execFile("python3", [exportScript], { cwd: REPO_ROOT }, () => { });
   }
 
   return NextResponse.json({ ok: true, batch, ref, seed, score, tags });

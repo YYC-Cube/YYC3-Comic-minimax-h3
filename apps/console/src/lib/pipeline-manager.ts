@@ -4,6 +4,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { resolvePythonBin } from "@/lib/python-bin";
 
 export type RunState = "idle" | "running" | "completed" | "failed";
 
@@ -140,7 +141,8 @@ start(batch: string | null, dryRun: boolean): { ok: boolean; error ?: string; ba
   this.log(`🚀 启动流水线 run#${this.runId}（${dryRun ? "DRY-RUN" : "真实执行"}）→ 日志 ${path.basename(logFile)}`);
 
   // PYTHONUNBUFFERED=1：Python 子进程 stdout 无缓冲，SSE 才能逐行实时
-  this.proc = spawn(process.env.PIPELINE_PYTHON ?? "python3", args, {
+  // 解释器固定白名单：不读环境变量（防任意程序注入）；如需更换解释器直接改此常量
+  this.proc = spawn("python3", args, {
     cwd: repoRoot, // pipeline_auto 以根目录 CWD glob report_batch*（批次号递增依赖）
     env: { ...process.env, PYTHONUNBUFFERED: "1" },
   });
