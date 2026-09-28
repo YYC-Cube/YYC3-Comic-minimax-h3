@@ -7,10 +7,17 @@
 .env
 .env.*
 !.env.example
+.secrets/
 *.pem
 *.key
 *.crt
 *.cert
+
+# ── H3 本地运行产物（符号链接/批次二进制不入仓库）──
+vendor
+ref_images/
+output_batch*/
+output_logs/
 
 # ── Python ──
 __pycache__/
