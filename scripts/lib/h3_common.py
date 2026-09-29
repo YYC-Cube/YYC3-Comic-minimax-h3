@@ -42,6 +42,7 @@ import json
 import os
 import resource
 import subprocess
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -60,7 +61,7 @@ LOCAL_WEIGHTS_ROOT = os.environ.get("H3_WEIGHTS_DIR", "/Users/yanyu/models")
 
 def m4_max_vram_config():
     """M4 Max 128GB 优化配置：CPU offload + MPS 计算（注意：device 必须是 torch.device 对象）"""
-    import torch
+    import torch  # type: ignore
     return {
         "offload_dtype": torch.float32,
         "offload_device": torch.device("cpu"),
@@ -75,7 +76,7 @@ def m4_max_vram_config():
 
 def gpu_vram_config():
     """按平台自适应：CUDA（DGX GB10 统一内存）优先，无 CUDA 回退 M4 Max MPS 配置"""
-    import torch
+    import torch  # type: ignore
     if torch.cuda.is_available():
         return {
             "offload_dtype": torch.float32,
@@ -114,7 +115,7 @@ def weight_files(variant: str, pipeline: str):
 
 def _model_config(variant: str, files: list):
     """本地权重目录存在 → ModelConfig(path=具体文件)（跳过下载）；否则走 model_id 在线下载"""
-    from diffsynth.pipelines.minimax_h3_audio_video import ModelConfig
+    from diffsynth.pipelines.minimax_h3_audio_video import ModelConfig  # type: ignore
     vc = gpu_vram_config()
     model_id = MODEL_ID_NF4 if variant == "nf4" else MODEL_ID_PRUNED
     local_dir = Path(LOCAL_WEIGHTS_ROOT) / "MiniMax-H3-NF4"
@@ -125,8 +126,9 @@ def _model_config(variant: str, files: list):
 
 def load_pipeline(variant: str = "nf4", pipeline: str = "ref2va", vram_limit: int = 96):
     """统一模型加载入口。variant: nf4|pruned；pipeline: fl2va|ref2va"""
-    import torch
-    from diffsynth.pipelines.minimax_h3_audio_video import MiniMaxH3Pipeline, ModelConfig
+    import torch  # type: ignore
+    from diffsynth.pipelines.minimax_h3_audio_video import (  # type: ignore
+        MiniMaxH3Pipeline, ModelConfig)
 
     # processor：本地已下载则直接指向目录（避免在线下载），否则走 model_id
     local_proc = Path(LOCAL_WEIGHTS_ROOT) / "MiniMax-H3" / pipeline.upper() / "processor"
@@ -158,6 +160,7 @@ class PerformanceTimer:
         self.seconds: float = 0.0
         self.peak_rss_gb: float = 0.0
         self.mps_alloc_gb: float | None = None
+        self.cuda_alloc_gb: float | None = None
 
     def __enter__(self):
         self.start = time.perf_counter()
@@ -165,12 +168,15 @@ class PerformanceTimer:
 
     def __exit__(self, *exc):
         self.seconds = round(time.perf_counter() - self.start, 3)
-        # macOS ru_maxrss 单位为字节；保留3位小数避免小进程被舍入为0
+        # ru_maxrss 单位双平台异义（getrusage(2)）：macOS=字节，Linux=KB
         rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        self.peak_rss_gb = round(rss / (1024 ** 3), 3)
+        rss_bytes = rss if sys.platform == "darwin" else rss * 1024
+        self.peak_rss_gb = round(rss_bytes / (1024 ** 3), 3)
         try:
-            import torch
-            if torch.backends.mps.is_available():
+            import torch  # type: ignore
+            if torch.cuda.is_available():
+                self.cuda_alloc_gb = round(float(torch.cuda.memory_allocated()) / (1024 ** 3), 2)
+            elif torch.backends.mps.is_available():
                 self.mps_alloc_gb = round(float(torch.mps.current_allocated_memory()) / (1024 ** 3), 2)
         except Exception:
             pass
@@ -327,7 +333,7 @@ def extract_audio_wav(video_path: Path, wav_path: Path, sr: int = 16000) -> bool
               "顶部 PATH 导出）", file=_sys.stderr)
         return False
     try:
-        proc = subprocess.run(
+        subprocess.run(
             [ffmpeg, "-y", "-loglevel", "error", "-i", str(video_path),
              "-ac", "1", "-ar", str(sr), "-vn", str(wav_path)],
             check=True, capture_output=True,
@@ -347,8 +353,8 @@ def heuristic_sync_score(video_path: Path, work_dir: Path) -> dict:
     音频RMS能量包络 vs 视频口型区运动能量 的分段相关系数 → 归一化到 0~1。
     返回 {"backend": "heuristic", "confidence": corr, "av_offset": 0, "score_norm": x}
     """
-    import cv2
-    import numpy as np
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
     import wave
 
     video_path = Path(video_path)
@@ -431,112 +437,83 @@ def heuristic_sync_score(video_path: Path, work_dir: Path) -> dict:
 
 def syncnet_score(video_path: Path, work_dir: Path) -> Optional[dict]:
     """
-    SyncNet 后端（优先）。依赖 pip install syncnet-python + 权重。
-    score_norm = conf / (abs(conf) + 5)，conf≈10（官方demo量级）→ 0.67
-    不可用时返回 None，由调用方降级。
+    SyncNet 后端（优先）：官方 syncnet_python 仓入口直调。
+    score_norm = conf / (abs(conf) + 5)，conf≈6-8（Ref2VA 实测口径）→ 0.55-0.62
+    不可用时返回 None，由调用方降级 heuristic。
 
-    实现说明：不调用 pl.inference()（其内部 scene 分段 + 逐段 _track 在
-    本项目视频上会 0 成轨，见 syncnet_score_impl 的根因笔记），
-    而是用全局检测一次性喂 _track 后走 crop→evaluate。
+    实现说明（2026-09-29 定版）：此前为 aspirational 的 syncnet_pipeline
+    封装（`syncnet_python.syncnet_pipeline` 模块从未落地，一调即 ImportError
+    降级）→ 重写为 subprocess 直调 run_pipeline.py → run_syncnet.py，
+    与 TC-G4-002 及 DGX 三档评分实证同款链路（诚实留证原则）。
     """
     return syncnet_score_impl(video_path, work_dir)
 
 
 def syncnet_score_impl(video_path: Path, work_dir: Path) -> Optional[dict]:
-    # syncnet 0.2.2 的 __init__ 在子模块导入失败时静默置 SyncNetPipeline=None，
-    # 必须从子模块导入以暴露真实 ImportError（如 scenedetect>=0.7 移除了 video_manager）
-    try:
-        from syncnet_python.syncnet_pipeline import PipelineConfig, SyncNetPipeline
-    except ImportError:
+    """run_pipeline（检测/跟踪/裁剪）→ run_syncnet（评估置信度）。
+
+    环境变量：
+        H3_SYNCNET_DIR  syncnet_python 仓根目录（默认按平台：
+                        mac ~/YYC-Cube/tools/syncnet/syncnet_python，
+                        Linux ~/tools/syncnet/syncnet_python）
+        H3_SYNCNET_PY   评分解释器（默认 sys.executable；需含 scenedetect/
+                        insightface/python_speech_features 等依赖）
+    短视频口径：--min_track 40 --min_face_size 60——默认 100 帧轨长门槛对
+    <100 帧短视频必空轨（TC-G4-002 实测根因）；本项目半身像脸宽 ~55px
+    同理需降 min_face_size。
+    任一步失败（仓缺失/零轨/解析失败/超时）返回 None，由调用方降级。
+    """
+    default_dir = Path.home() / (
+        "YYC-Cube/tools/syncnet/syncnet_python" if sys.platform == "darwin"
+        else "tools/syncnet/syncnet_python")
+    root = Path(os.environ.get("H3_SYNCNET_DIR") or default_dir).expanduser()
+    if not (root / "run_pipeline.py").exists():
         return None
+    # 解释器候选链：环境变量 > ComfyUI venv（G4-004 实证依赖齐备）>
+    # mac h3 仓 venv（含 torch 但缺 cv2，备选）> 当前解释器
+    candidates = [os.environ.get("H3_SYNCNET_PY")]
+    if sys.platform == "darwin":
+        candidates.append(str(Path.home() / "YYC-Cube/tools/ComfyUI/.venv/bin/python"))
+        candidates.append(str(Path.home() / "YYC-Cube/YYC3-MiniMax-H3/.venv/bin/python"))
+    candidates.append(sys.executable)
+    py = next((c for c in candidates if c and Path(c).exists()), None)
+    if not py:
+        return None
+    work_dir.mkdir(parents=True, exist_ok=True)
+    reference = video_path.stem  # 任务标识符：run_pipeline 按此建 data_dir 子目录
     try:
-        import ffmpeg as ffmpeg_py
-
-        device = "cpu"  # M4 Max 上 CPU 稳定；权重小，离线批量不阻塞生成
-        # 权重路径：项目根 models/syncnet/（sfd_face.pth + syncnet_v2.model，
-        # 来自 Oxford VGG lipsync 页面）；PipelineConfig 用相对路径，须显式指定
-        weights_dir = Path(__file__).resolve().parents[2] / "models" / "syncnet"
-        sfd = weights_dir / "sfd_face.pth"
-        snw = weights_dir / "syncnet_v2.model"
-        if not (sfd.exists() and snw.exists()):
+        p1 = subprocess.run(
+            [py, "run_pipeline.py", "--videofile", str(video_path),
+             "--reference", reference, "--data_dir", str(work_dir),
+             "--min_track", "40", "--min_face_size", "60", "--overwrite"],
+            cwd=str(root), capture_output=True, text=True, timeout=900)
+        if p1.returncode != 0 or not (work_dir / "pycrop" / reference).exists():
             return None
-        # 本项目480x832半身像实测脸宽仅~55px（默认100是LRS2大特写口径，会让track全灭），
-        # 且AI视频口型开合引起 IoU<0.5 频繁断轨（实测单轨最长49帧），故：
-        #   min_face_size 40（尺寸门槛）+ min_track 25（轨长门槛）+ num_failed_det 50（断轨容忍）
-        cfg = PipelineConfig(s3fd_weights=str(sfd), syncnet_weights=str(snw),
-                             min_face_size=40, min_track=25, num_failed_det=50)
-        pl = SyncNetPipeline(cfg, device=device)
-
-        work_dir.mkdir(parents=True, exist_ok=True)
-        # ① 恒定25fps AVI（复刻 pipeline 预处理）
-        avi = work_dir / "video.avi"
-        ffmpeg_py.input(str(video_path)).output(
-            str(avi), **{"q:v": 2}, r=cfg.frame_rate, **{"async": 1}
-        ).overwrite_output().run(quiet=True)
-        # ② 抽帧
-        frames_dir = work_dir / "frames"
-        frames_dir.mkdir(exist_ok=True)
-        ffmpeg_py.input(str(avi)).output(
-            str(frames_dir / "%06d.jpg"), **{"q:v": 2}, f="image2", threads=1
-        ).overwrite_output().run(quiet=True)
-        frames = sorted(frames_dir.glob("*.jpg"))
-        if not frames:
+        p2 = subprocess.run(
+            [py, "run_syncnet.py", "--data_dir", str(work_dir),
+             "--videofile", str(video_path), "--reference", reference],
+            cwd=str(root), capture_output=True, text=True, timeout=900)
+        if p2.returncode != 0:
             return None
-        # ③ 音频 16k mono wav
-        wav = work_dir / "speech.wav"
-        ffmpeg_py.input(str(video_path)).output(
-            str(wav), ac=1, ar=cfg.audio_sample_rate, format="wav"
-        ).overwrite_output().run(quiet=True)
-        # ④ 人脸检测（全局帧号）
-        import cv2
-        detections = []
-        for i, fp in enumerate(frames):
-            img = cv2.imread(str(fp))
-            boxes = (pl.s3fd.detect_faces(
-                cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
-                conf_th=0.9, scales=[cfg.facedet_scale]) if img is not None else [])
-            detections.append([
-                {"frame": i, "bbox": b[:-1].tolist(), "conf": float(b[-1])}
-                for b in boxes
-            ])
-        if not any(detections):
+        # SyncNetInstance 经 logging 输出（默认 stderr），合并双流解析
+        # 注意：行首含时间戳「18:53:25,480」——必须 rsplit 最后一个冒号，
+        # 否则切在时间戳上 float 抛 ValueError（冒烟实测踩坑）
+        text = (p2.stdout or "") + (p2.stderr or "")
+        conf = off = dist = None
+        for line in text.splitlines():
+            if "Confidence:" in line:
+                conf = float(line.rsplit(":", 1)[1].strip())
+            elif "AV offset:" in line:
+                off = float(line.rsplit(":", 1)[1].strip())
+            elif "Min dist:" in line:
+                dist = float(line.rsplit(":", 1)[1].strip())
+        if conf is None:
             return None
-        # ⑤ 关键差异：全局一次性 _track（绕过 scene 分段；分段会 0 成轨）
-        #    根因笔记：scenedetect 把 124 帧口播视频切成多段，每段独立 _track 的
-        #    种子链在 IoU<0.5 断点即弃轮，段内剩余脸帧数 < min_track → 全部丢弃；
-        #    全局模式允许轨跨越场景边界，实测 seed42 能成 2 条轨（1-123 / 6-81）
-        tracks = pl._track(detections)
-        if not tracks:
-            return None
-        # ⑥ crop → evaluate
-        confs, offsets = [], []
-        for i, t in enumerate(tracks):
-            cp = pl._crop(t, frames, str(wav), work_dir / "cropped" / f"{i:05d}")
-            crop_dir = work_dir / "cropped" / f"crop_{i:05d}"
-            crop_dir.mkdir(parents=True, exist_ok=True)
-            ffmpeg_py.input(cp).output(str(crop_dir / "%06d.jpg"), f="image2", threads=1).overwrite_output().run(quiet=True)
-            ffmpeg_py.input(cp).output(str(crop_dir / "audio.wav"), ac=1, vn=None,
-                                       acodec="pcm_s16le", ar=16000,
-                                       af="aresample=async=1").overwrite_output().run(quiet=True)
-            class _Opt:
-                tmp_dir = ""
-                batch_size = 0
-                vshift = 0
-            opt = _Opt()
-            opt.tmp_dir = str(crop_dir)
-            opt.batch_size = cfg.batch_size
-            opt.vshift = cfg.vshift
-            off, conf, _dist = pl.syncnet.evaluate(opt=opt)
-            confs.append(conf)
-            offsets.append(off)
-        if not confs:
-            return None
-        best_i = max(range(len(confs)), key=lambda k: confs[k])
-        conf = float(confs[best_i])
         return {
             "backend": "syncnet",
             "confidence": round(conf, 4),
-            "av_offset": int(offsets[best_i]),
+            "av_offset": int(off) if off is not None else 0,
+            "min_dist": round(dist, 3) if dist is not None else None,
             "score_norm": round(conf / (abs(conf) + 5.0), 4),
         }
     except Exception:
