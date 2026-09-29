@@ -73,6 +73,23 @@ def m4_max_vram_config():
     }
 
 
+def gpu_vram_config():
+    """按平台自适应：CUDA（DGX GB10 统一内存）优先，无 CUDA 回退 M4 Max MPS 配置"""
+    import torch
+    if torch.cuda.is_available():
+        return {
+            "offload_dtype": torch.float32,
+            "offload_device": torch.device("cpu"),
+            "onload_dtype": torch.bfloat16,
+            "onload_device": torch.device("cuda"),
+            "preparing_dtype": torch.bfloat16,
+            "preparing_device": torch.device("cuda"),
+            "computation_dtype": torch.bfloat16,
+            "computation_device": torch.device("cuda"),
+        }
+    return m4_max_vram_config()
+
+
 def weight_files(variant: str, pipeline: str):
     """按 variant(nf4|pruned) 和 pipeline(fl2va|ref2va) 返回权重清单
 
@@ -98,7 +115,7 @@ def weight_files(variant: str, pipeline: str):
 def _model_config(variant: str, files: list):
     """本地权重目录存在 → ModelConfig(path=具体文件)（跳过下载）；否则走 model_id 在线下载"""
     from diffsynth.pipelines.minimax_h3_audio_video import ModelConfig
-    vc = m4_max_vram_config()
+    vc = gpu_vram_config()
     model_id = MODEL_ID_NF4 if variant == "nf4" else MODEL_ID_PRUNED
     local_dir = Path(LOCAL_WEIGHTS_ROOT) / "MiniMax-H3-NF4"
     if (local_dir / files[0]).exists():
@@ -117,7 +134,7 @@ def load_pipeline(variant: str = "nf4", pipeline: str = "ref2va", vram_limit: in
                 else ModelConfig(model_id=PROCESSOR_ID, origin_file_pattern=f"{pipeline.upper()}/processor/"))
     return MiniMaxH3Pipeline.from_pretrained(
         torch_dtype=torch.bfloat16,
-        device="mps",
+        device="cuda" if torch.cuda.is_available() else "mps",
         model_configs=_model_config(variant, weight_files(variant, pipeline)),
         processor_config=proc_cfg,
         vram_limit=vram_limit,
