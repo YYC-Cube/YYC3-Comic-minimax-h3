@@ -4,7 +4,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { resolvePythonBin } from "@/lib/python-bin";
+// 注：原 `import { resolvePythonBin } from "@/lib/python-bin"` 为死导入——本文件
+// 实际使用固定 "python3" 常量（见下方 spawn 调用与白名单注释），且该模块在任何
+// 上游历史中均不存在（2026-10-05 首次审计 P0-3 修复：删除死导入替代造模块）
 
 export type RunState = "idle" | "running" | "completed" | "failed";
 

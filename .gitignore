@@ -88,3 +88,6 @@ coverage/
 
 # ── 工具状态目录（不入仓库）──
 .mimosa/
+
+# agent 运行时审计产物（gateway 写入，不入库）
+agent/data/
