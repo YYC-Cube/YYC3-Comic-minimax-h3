@@ -91,3 +91,6 @@ coverage/
 
 # agent 运行时审计产物（gateway 写入，不入库）
 agent/data/
+
+# Next.js 构建产物
+next-env.d.ts
