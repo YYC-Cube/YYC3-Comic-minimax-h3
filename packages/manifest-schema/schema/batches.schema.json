@@ -196,6 +196,10 @@
                 },
                 "additionalProperties": false,
                 "description": "v2 调度配置：发布排期（知遇·伯乐建议落点，联动 ops 台账）"
+              },
+              "audio_high_quality": {
+                "type": "boolean",
+                "description": "v2.1（YYC3-72 M1决议 A2）：true=启用 ≥192k 高音质分支；缺省 false=语音向基线 ≥128k（校验阈值带 AAC VBR 容差：120k/184k）"
               }
             },
             "required": [
