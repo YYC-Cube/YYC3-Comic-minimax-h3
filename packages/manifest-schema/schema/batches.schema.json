@@ -5,7 +5,9 @@
       "type": "object",
       "properties": {
         "schema_version": {
-          "type": "integer"
+          "type": "integer",
+          "enum": [1, 2],
+          "description": "v1=执行统计型；v2=+调度配置字段（seed_list/aspect_profiles/active_profiles/quality_gate/schedule，Phase A3 · YYC3-68 §7.3）"
         },
         "generated_at": {
           "type": "string"
@@ -125,6 +127,75 @@
                   "number",
                   "null"
                 ]
+              },
+              "seed_list": {
+                "type": "array",
+                "items": {
+                  "type": "integer"
+                },
+                "description": "v2 调度配置：候选种子清单（元启·天枢 SEED 演进输入）"
+              },
+              "aspect_profiles": {
+                "type": "object",
+                "properties": {
+                  "16:9": {
+                    "type": "object"
+                  },
+                  "9:16": {
+                    "type": "object"
+                  },
+                  "1:1": {
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": {
+                  "type": "object"
+                },
+                "description": "v2 调度配置：画幅档参数（compose/dynamic/concat ASPECT 三档）"
+              },
+              "active_profiles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "16:9",
+                    "9:16",
+                    "1:1"
+                  ]
+                },
+                "description": "v2 调度配置：本批次启用的画幅档"
+              },
+              "quality_gate": {
+                "type": "object",
+                "properties": {
+                  "red_line": {
+                    "type": "number"
+                  },
+                  "review_cmd": {
+                    "type": "string"
+                  },
+                  "recheck_max": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": false,
+                "description": "v2 调度配置：质检门禁（红线 80/复检 ≤2 轮）"
+              },
+              "schedule": {
+                "type": "object",
+                "properties": {
+                  "window": {
+                    "type": "string"
+                  },
+                  "slots": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false,
+                "description": "v2 调度配置：发布排期（知遇·伯乐建议落点，联动 ops 台账）"
               }
             },
             "required": [
