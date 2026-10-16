@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@yyc3/manifest-schema": "workspace:*",
-    "next": "^15.1.0",
+    "next": "^15.5.27",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -19,7 +19,7 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "postcss": "^8.4.0",
+    "postcss": "^8.5.30",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.5.0"
   }
